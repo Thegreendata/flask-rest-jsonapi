@@ -105,3 +105,13 @@ class AccessDenied(JsonApiException):
 
     title = 'Access denied'
     status = '403'
+
+
+class PreconditionFailed(JsonApiException):
+    title = "Precondition Failed"
+    status = 412
+
+
+class NotModified(JsonApiException):
+    title = "Not Modified"
+    status = 304

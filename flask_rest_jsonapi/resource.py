@@ -5,17 +5,21 @@
 import inspect
 import json
 from six import with_metaclass
+import pytz
+from datetime import datetime
+import hashlib
 
 from werkzeug.wrappers import Response
-from flask import request, url_for, make_response
+from flask import request, url_for, make_response, current_app
 from flask.wrappers import Response as FlaskResponse
 from flask.views import MethodView, MethodViewType
 from marshmallow_jsonapi.exceptions import IncorrectTypeError
 from marshmallow import ValidationError
 
+from flask_rest_jsonapi.errors import jsonapi_errors
 from flask_rest_jsonapi.querystring import QueryStringManager as QSManager
 from flask_rest_jsonapi.pagination import add_pagination_links
-from flask_rest_jsonapi.exceptions import InvalidType, BadRequest, RelationNotFound
+from flask_rest_jsonapi.exceptions import InvalidType, BadRequest, JsonApiException, RelationNotFound, ObjectNotFound, NotModified, PreconditionFailed
 from flask_rest_jsonapi.decorators import check_headers, check_method_requirements, jsonapi_exception_formatter
 from flask_rest_jsonapi.schema import compute_schema, get_relationships, get_model_field
 from flask_rest_jsonapi.data_layers.base import BaseDataLayer
@@ -74,37 +78,59 @@ class Resource(MethodView):
 
         if isinstance(response, Response):
             response.headers.add('Content-Type', 'application/vnd.api+json')
-            return response
-
-        if not isinstance(response, tuple):
+            resp = response
+        elif not isinstance(response, tuple):
             if isinstance(response, dict):
                 response.update({'jsonapi': {'version': '1.0'}})
-            return make_response(json.dumps(response, cls=JSONEncoder), 200, headers)
-
-        try:
-            data, status_code, headers = response
-            headers.update({'Content-Type': 'application/vnd.api+json'})
-        except ValueError:
-            pass
-
-        try:
-            data, status_code = response
-        except ValueError:
-            pass
-
-        if isinstance(data, dict):
-            data.update({'jsonapi': {'version': '1.0'}})
-
-        if isinstance(data, FlaskResponse):
-            data.headers.add('Content-Type', 'application/vnd.api+json')
-            data.status_code = status_code
-            return data
-        elif isinstance(data, str):
-            json_reponse = data
+            resp = make_response(json.dumps(response), 200, headers)
         else:
-            json_reponse = json.dumps(data, cls=JSONEncoder)
+            try:
+                data, status_code, headers = response
+                headers.update({'Content-Type': 'application/vnd.api+json'})
+            except ValueError:
+                pass
 
-        return make_response(json_reponse, status_code, headers)
+            try:
+                data, status_code = response
+            except ValueError:
+                pass
+
+            if isinstance(data, dict):
+                data.update({'jsonapi': {'version': '1.0'}})
+
+            if isinstance(data, FlaskResponse):
+                data.headers.add('Content-Type', 'application/vnd.api+json')
+                data.status_code = status_code
+                return data
+            elif isinstance(data, str):
+                json_reponse = data
+            else:
+                json_reponse = json.dumps(data, cls=JSONEncoder)
+
+            resp = make_response(json.dumps(data), status_code, headers)
+
+        # ETag Handling
+        if current_app.config['ETAG'] is True:
+            etag = hashlib.sha1(resp.get_data()).hexdigest()
+            resp.headers['ETag'] = etag
+
+            if_match = request.headers.get('If-Match')
+            if_none_match = request.headers.get('If-None-Match')
+            if if_match:
+                etag_list = [tag.strip() for tag in if_match.split(',')]
+                if etag not in etag_list and '*' not in etag_list:
+                    exc = PreconditionFailed({'pointer': ''}, 'Precondition failed')
+                    return make_response(json.dumps(jsonapi_errors([exc.to_dict()])),
+                                         exc.status,
+                                         headers)
+            elif if_none_match:
+                etag_list = [tag.strip() for tag in if_none_match.split(',')]
+                if etag in etag_list or '*' in etag_list:
+                    exc = NotModified({'pointer': ''}, 'Resource not modified')
+                    return make_response(json.dumps(jsonapi_errors([exc.to_dict()])),
+                                         exc.status,
+                                         headers)
+            return resp
 
 
 class ResourceList(with_metaclass(ResourceMeta, Resource)):
