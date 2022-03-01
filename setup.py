@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-__version__ = '0.31.2-p1'
+__version__ = '0.31.2-p2'
 
 setup(
     name="Flask-REST-JSONAPI",
